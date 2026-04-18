@@ -1,0 +1,8 @@
+.DS_Store
+*.o
+*.d
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+WinExplorer.app/
