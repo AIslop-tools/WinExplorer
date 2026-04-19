@@ -63,6 +63,11 @@ struct ContentView: View {
 
             toolbarButton("network", label: "Connect") { vm.showConnectToServerDialog() }
 
+            if vm.isInTrash {
+                Divider().frame(height: 20)
+                toolbarButton("trash.slash", label: "Empty Trash", enabled: !vm.items.isEmpty) { vm.emptyTrash() }
+            }
+
             Spacer()
 
             Picker("", selection: $vm.viewMode) {
@@ -108,8 +113,10 @@ struct ContentView: View {
                 }
             } else if vm.items.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "folder").font(.system(size: 48)).foregroundColor(.secondary)
-                    Text("This folder is empty").foregroundColor(.secondary)
+                    Image(systemName: vm.isInTrash ? "trash" : "folder")
+                        .font(.system(size: 48)).foregroundColor(.secondary)
+                    Text(vm.isInTrash ? "Trash is empty" : "This folder is empty")
+                        .foregroundColor(.secondary)
                 }
             } else {
                 switch vm.viewMode {

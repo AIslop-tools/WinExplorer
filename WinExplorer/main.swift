@@ -98,6 +98,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(mi("Open Terminal Here",action: #selector(openTerminalAction), key: ""))
         fileMenu.addItem(.separator())
         fileMenu.addItem(mi("Move to Trash",     action: #selector(deleteAction),       key: String(UnicodeScalar(NSBackspaceCharacter)!), mod: .command))
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(mi("Empty Trash…",      action: #selector(emptyTrashAction),   key: String(UnicodeScalar(NSDeleteCharacter)!),    mod: [.command, .shift]))
 
         // ── Edit menu ─────────────────────────────────────────────────────────
         let editItem = NSMenuItem(); main.addItem(editItem)
@@ -165,6 +167,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return vm?.selectedItemIDs.count == 1
         case #selector(pasteAction):
             return vm?.canPaste ?? false
+        case #selector(emptyTrashAction):
+            return !(vm?.items.isEmpty ?? true)
         case #selector(goBackAction):
             return vm?.canGoBack ?? false
         case #selector(goForwardAction):
@@ -192,6 +196,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func deleteAction()        { vm?.deleteSelected() }
     @objc func showInFinderAction()  { if let item = vm?.selectedItems.first { vm?.showInFinder(item) } }
     @objc func openTerminalAction()  { vm?.openTerminal() }
+    @objc func emptyTrashAction()    { vm?.emptyTrash() }
 
     // MARK: - Edit actions
     @objc func cutAction()           { vm?.cutSelected() }

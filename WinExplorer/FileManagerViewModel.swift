@@ -471,7 +471,39 @@ class FileManagerViewModel: ObservableObject {
     private func breadcrumbName(for url: URL) -> String {
         if url.path == "/" { return "Macintosh HD" }
         if url.path == fm.homeDirectoryForCurrentUser.path { return "Home" }
+        if url.lastPathComponent == ".Trash" { return "Trash" }
         return url.lastPathComponent
+    }
+
+    var isInTrash: Bool {
+        currentURL.path == fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash").path
+    }
+
+    func emptyTrash() {
+        let alert = NSAlert()
+        alert.messageText = "Empty Trash"
+        alert.informativeText = "Are you sure you want to permanently delete the items in the Trash? This cannot be undone."
+        alert.addButton(withTitle: "Empty Trash")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        let contents = (try? fm.contentsOfDirectory(at: trashURL,
+            includingPropertiesForKeys: nil, options: [])) ?? []
+        var failures: [String] = []
+        for url in contents {
+            do { try fm.removeItem(at: url) }
+            catch { failures.append(url.lastPathComponent) }
+        }
+        loadItems()
+        if !failures.isEmpty {
+            let err = NSAlert()
+            err.messageText = "Could Not Delete All Items"
+            err.informativeText = failures.joined(separator: "\n")
+            err.alertStyle = .warning
+            err.runModal()
+        }
     }
 
     // MARK: - Sidebar
@@ -492,9 +524,11 @@ class FileManagerViewModel: ObservableObject {
             return SidebarItem(name: name, url: url, systemImage: img)
         }))
 
+        let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         sections.append(SidebarSection(title: "This Mac", items: [
-            SidebarItem(name: "Home", url: fm.homeDirectoryForCurrentUser, systemImage: "house"),
-            SidebarItem(name: "Macintosh HD", url: URL(fileURLWithPath: "/"), systemImage: "internaldrive"),
+            SidebarItem(name: "Home",         url: fm.homeDirectoryForCurrentUser,      systemImage: "house"),
+            SidebarItem(name: "Macintosh HD", url: URL(fileURLWithPath: "/"),           systemImage: "internaldrive"),
+            SidebarItem(name: "Trash",        url: trashURL,                            systemImage: "trash"),
         ]))
 
         let volumes = (try? fm.contentsOfDirectory(
