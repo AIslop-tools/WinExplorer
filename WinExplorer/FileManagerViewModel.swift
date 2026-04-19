@@ -70,6 +70,8 @@ class FileManagerViewModel: ObservableObject {
     private var clipboardIsCut: Bool = false
     private let fm = FileManager.default
     private var volumeObservers: [Any] = []
+    private var recentFolders: [URL] = []          // most-recent first, capped at 10
+    private static let recentLimit = 10
 
     init() {
         self.currentURL = fm.homeDirectoryForCurrentUser
@@ -157,7 +159,20 @@ class FileManagerViewModel: ObservableObject {
             historyIndex = historyStack.count - 1
         }
         currentURL = url
+        recordRecentFolder(url)
         loadItems()
+    }
+
+    private func recordRecentFolder(_ url: URL) {
+        // Don't track Trash or root
+        let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        guard url.path != trash.path, url.path != "/" else { return }
+        recentFolders.removeAll { $0.path == url.path }
+        recentFolders.insert(url, at: 0)
+        if recentFolders.count > Self.recentLimit {
+            recentFolders = Array(recentFolders.prefix(Self.recentLimit))
+        }
+        buildSidebarSections()
     }
 
     func goBack() {
@@ -472,6 +487,7 @@ class FileManagerViewModel: ObservableObject {
         if url.path == "/" { return "Macintosh HD" }
         if url.path == fm.homeDirectoryForCurrentUser.path { return "Home" }
         if url.lastPathComponent == ".Trash" { return "Trash" }
+        if url.path == "/Applications" { return "Applications" }
         return url.lastPathComponent
     }
 
@@ -512,17 +528,26 @@ class FileManagerViewModel: ObservableObject {
         var sections: [SidebarSection] = []
 
         let quickItems: [(String, URL?, String)] = [
-            ("Desktop",   fm.urls(for: .desktopDirectory,   in: .userDomainMask).first, "menubar.dock.rectangle"),
-            ("Downloads", fm.urls(for: .downloadsDirectory, in: .userDomainMask).first, "arrow.down.circle"),
-            ("Documents", fm.urls(for: .documentDirectory,  in: .userDomainMask).first, "doc"),
-            ("Pictures",  fm.urls(for: .picturesDirectory,  in: .userDomainMask).first, "photo"),
-            ("Music",     fm.urls(for: .musicDirectory,     in: .userDomainMask).first, "music.note"),
-            ("Movies",    fm.urls(for: .moviesDirectory,    in: .userDomainMask).first, "film"),
+            ("Desktop",      fm.urls(for: .desktopDirectory,   in: .userDomainMask).first, "menubar.dock.rectangle"),
+            ("Downloads",    fm.urls(for: .downloadsDirectory, in: .userDomainMask).first, "arrow.down.circle"),
+            ("Documents",    fm.urls(for: .documentDirectory,  in: .userDomainMask).first, "doc"),
+            ("Pictures",     fm.urls(for: .picturesDirectory,  in: .userDomainMask).first, "photo"),
+            ("Music",        fm.urls(for: .musicDirectory,     in: .userDomainMask).first, "music.note"),
+            ("Movies",       fm.urls(for: .moviesDirectory,    in: .userDomainMask).first, "film"),
+            ("Applications", URL(fileURLWithPath: "/Applications"),                         "app.badge"),
         ]
         sections.append(SidebarSection(title: "Quick access", items: quickItems.compactMap { name, url, img in
             guard let url = url else { return nil }
             return SidebarItem(name: name, url: url, systemImage: img)
         }))
+
+        if !recentFolders.isEmpty {
+            let recentItems = recentFolders.map { url -> SidebarItem in
+                let icon = (url.path == fm.homeDirectoryForCurrentUser.path) ? "house" : "clock.arrow.circlepath"
+                return SidebarItem(name: url.lastPathComponent, url: url, systemImage: icon)
+            }
+            sections.append(SidebarSection(title: "Recent", items: recentItems))
+        }
 
         let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         sections.append(SidebarSection(title: "This Mac", items: [
