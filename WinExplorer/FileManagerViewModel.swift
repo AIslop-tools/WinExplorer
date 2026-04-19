@@ -532,6 +532,33 @@ class FileManagerViewModel: ObservableObject {
         }
     }
 
+    func newFile() {
+        guard fm.isWritableFile(atPath: currentURL.path) else {
+            let alert = NSAlert()
+            alert.messageText = "Cannot Create File"
+            alert.informativeText = "You don't have permission to create files here."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+        var name = "New file.txt"
+        var counter = 2
+        var url = currentURL.appendingPathComponent(name)
+        while fm.fileExists(atPath: url.path) {
+            name = "New file (\(counter)).txt"
+            url = currentURL.appendingPathComponent(name)
+            counter += 1
+        }
+        guard fm.createFile(atPath: url.path, contents: Data(), attributes: nil) else { return }
+        loadItems()
+        if let newItem = items.first(where: { $0.url == url }) {
+            selectedItemIDs = [newItem.id]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.renamingItemID = newItem.id
+            }
+        }
+    }
+
     func beginRename() {
         guard selectedItems.count == 1 else { return }
         renamingItemID = selectedItems[0].id

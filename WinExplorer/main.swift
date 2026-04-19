@@ -100,6 +100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fileItem = NSMenuItem(); main.addItem(fileItem)
         let fileMenu = NSMenu(title: "File"); fileItem.submenu = fileMenu
         fileMenu.addItem(mi("New Folder",        action: #selector(newFolderAction),   key: "N", mod: [.command, .shift]))
+        fileMenu.addItem(mi("New File",          action: #selector(newFileAction),     key: "n"))
         fileMenu.addItem(.separator())
         fileMenu.addItem(mi("Open",              action: #selector(openSelectedAction), key: "o"))
         fileMenu.addItem(.separator())
@@ -201,6 +202,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - File actions
     @objc func newFolderAction()     { vm?.newFolder() }
+    @objc func newFileAction()       { vm?.newFile() }
     @objc func openSelectedAction()  { vm?.openSelected() }
     @objc func renameAction()        { vm?.beginRename() }
     @objc func deleteAction()        { vm?.deleteSelected() }

@@ -105,6 +105,9 @@ struct FileGridCell: View {
     var contextMenu: some View {
         Button("Open") { vm.openItem(item) }
         Divider()
+        Button("New File") { vm.newFile() }
+        Button("New Folder") { vm.newFolder() }
+        Divider()
         Button("Cut")  { vm.selectedItemIDs = [item.id]; vm.cutSelected() }
         Button("Copy") { vm.selectedItemIDs = [item.id]; vm.copySelected() }
         Divider()

@@ -34,6 +34,7 @@ struct ContentView: View {
     var toolbarBar: some View {
         HStack(spacing: 4) {
             toolbarButton("folder.badge.plus", label: "New folder") { vm.newFolder() }
+            toolbarButton("doc.badge.plus",    label: "New file")   { vm.newFile() }
 
             Divider().frame(height: 20)
 
