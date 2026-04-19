@@ -32,6 +32,7 @@ struct SidebarItem: Identifiable {
     let systemImage: String
     var isNetworkVolume: Bool = false
     var isEjectable: Bool = false   // true for network volumes, removable drives, and disk images
+    var isRecents: Bool = false     // sentinel: clicking this shows the Recents Spotlight view
 }
 
 struct ViewModelKey: FocusedValueKey {
@@ -64,14 +65,14 @@ class FileManagerViewModel: ObservableObject {
     @Published var showHiddenFiles: Bool = false {
         didSet { loadItems() }
     }
+    @Published var isShowingRecents: Bool = false
 
     private var allItems: [FileItem] = []
     private var clipboardURLs: [URL] = []
     private var clipboardIsCut: Bool = false
     private let fm = FileManager.default
     private var volumeObservers: [Any] = []
-    private var recentFolders: [URL] = []          // most-recent first, capped at 10
-    private static let recentLimit = 10
+    private var metadataQuery: NSMetadataQuery?
 
     init() {
         self.currentURL = fm.homeDirectoryForCurrentUser
@@ -90,8 +91,58 @@ class FileManagerViewModel: ObservableObject {
     }
 
     deinit {
+        metadataQuery?.stop()
         let nc = NSWorkspace.shared.notificationCenter
         for obs in volumeObservers { nc.removeObserver(obs) }
+    }
+
+    // MARK: - Recents (Spotlight)
+
+    func showRecents() {
+        isShowingRecents = true
+        selectedItemIDs = []
+        breadcrumbs = [BreadcrumbItem(name: "Recents", url: fm.homeDirectoryForCurrentUser)]
+
+        metadataQuery?.stop()
+        let q = NSMetadataQuery()
+        // Files opened in the last 30 days, excluding system/hidden paths
+        q.predicate = NSPredicate(format: "%K >= %@ && %K != '' && %K == false",
+            NSMetadataItemLastUsedDateKey,
+            Calendar.current.date(byAdding: .day, value: -30, to: Date())! as NSDate,
+            NSMetadataItemPathKey,
+            NSMetadataItemIsUbiquitousKey)
+        q.sortDescriptors = [NSSortDescriptor(key: NSMetadataItemLastUsedDateKey, ascending: false)]
+        q.searchScopes = [NSMetadataQueryLocalComputerScope]
+
+        NotificationCenter.default.addObserver(forName: .NSMetadataQueryDidFinishGathering,
+                                               object: q, queue: .main) { [weak self] _ in
+            self?.handleQueryResults(q)
+        }
+        metadataQuery = q
+        q.start()
+
+        // Show a loading placeholder while the query runs
+        items = []
+        updateStatus()
+    }
+
+    private func handleQueryResults(_ q: NSMetadataQuery) {
+        q.disableUpdates()
+        var seen = Set<String>()
+        var result: [FileItem] = []
+        for i in 0 ..< q.resultCount {
+            guard let item = q.result(at: i) as? NSMetadataItem,
+                  let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
+                  !path.contains("/."), !path.hasPrefix("/private/"),
+                  !path.hasPrefix("/System/"), !path.hasPrefix("/usr/"),
+                  seen.insert(path).inserted else { continue }
+            result.append(FileItem(url: URL(fileURLWithPath: path)))
+            if result.count == 200 { break }
+        }
+        q.enableUpdates()
+        allItems = result
+        applyFilter()
+        updateStatus()
     }
 
     func connectToServer(_ urlString: String) {
@@ -151,6 +202,9 @@ class FileManagerViewModel: ObservableObject {
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return }
 
+        isShowingRecents = false
+        metadataQuery?.stop()
+
         if addToHistory {
             if historyIndex < historyStack.count - 1 {
                 historyStack = Array(historyStack.prefix(historyIndex + 1))
@@ -159,20 +213,7 @@ class FileManagerViewModel: ObservableObject {
             historyIndex = historyStack.count - 1
         }
         currentURL = url
-        recordRecentFolder(url)
         loadItems()
-    }
-
-    private func recordRecentFolder(_ url: URL) {
-        // Don't track Trash or root
-        let trash = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        guard url.path != trash.path, url.path != "/" else { return }
-        recentFolders.removeAll { $0.path == url.path }
-        recentFolders.insert(url, at: 0)
-        if recentFolders.count > Self.recentLimit {
-            recentFolders = Array(recentFolders.prefix(Self.recentLimit))
-        }
-        buildSidebarSections()
     }
 
     func goBack() {
@@ -527,6 +568,11 @@ class FileManagerViewModel: ObservableObject {
     private func buildSidebarSections() {
         var sections: [SidebarSection] = []
 
+        // "Recents" sentinel — url is unused when isRecents = true
+        let recentsItem = SidebarItem(name: "Recents",
+                                      url: fm.homeDirectoryForCurrentUser,
+                                      systemImage: "clock",
+                                      isRecents: true)
         let quickItems: [(String, URL?, String)] = [
             ("Desktop",      fm.urls(for: .desktopDirectory,   in: .userDomainMask).first, "menubar.dock.rectangle"),
             ("Downloads",    fm.urls(for: .downloadsDirectory, in: .userDomainMask).first, "arrow.down.circle"),
@@ -536,18 +582,12 @@ class FileManagerViewModel: ObservableObject {
             ("Movies",       fm.urls(for: .moviesDirectory,    in: .userDomainMask).first, "film"),
             ("Applications", URL(fileURLWithPath: "/Applications"),                         "app.badge"),
         ]
-        sections.append(SidebarSection(title: "Quick access", items: quickItems.compactMap { name, url, img in
+        var quickSection = quickItems.compactMap { name, url, img -> SidebarItem? in
             guard let url = url else { return nil }
             return SidebarItem(name: name, url: url, systemImage: img)
-        }))
-
-        if !recentFolders.isEmpty {
-            let recentItems = recentFolders.map { url -> SidebarItem in
-                let icon = (url.path == fm.homeDirectoryForCurrentUser.path) ? "house" : "clock.arrow.circlepath"
-                return SidebarItem(name: url.lastPathComponent, url: url, systemImage: icon)
-            }
-            sections.append(SidebarSection(title: "Recent", items: recentItems))
         }
+        quickSection.insert(recentsItem, at: 0)
+        sections.append(SidebarSection(title: "Quick access", items: quickSection))
 
         let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         sections.append(SidebarSection(title: "This Mac", items: [

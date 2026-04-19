@@ -113,9 +113,9 @@ struct ContentView: View {
                 }
             } else if vm.items.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: vm.isInTrash ? "trash" : "folder")
+                    Image(systemName: vm.isInTrash ? "trash" : (vm.isShowingRecents ? "clock" : "folder"))
                         .font(.system(size: 48)).foregroundColor(.secondary)
-                    Text(vm.isInTrash ? "Trash is empty" : "This folder is empty")
+                    Text(vm.isInTrash ? "Trash is empty" : (vm.isShowingRecents ? "No recent files" : "This folder is empty"))
                         .foregroundColor(.secondary)
                 }
             } else {

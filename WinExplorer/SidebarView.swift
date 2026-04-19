@@ -22,12 +22,14 @@ struct SidebarRow: View {
     @EnvironmentObject var vm: FileManagerViewModel
     let item: SidebarItem
 
-    var isActive: Bool { vm.currentURL == item.url }
+    var isActive: Bool {
+        item.isRecents ? vm.isShowingRecents : (!vm.isShowingRecents && vm.currentURL == item.url)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             Button {
-                vm.navigate(to: item.url)
+                if item.isRecents { vm.showRecents() } else { vm.navigate(to: item.url) }
             } label: {
                 Label(item.name, systemImage: item.systemImage)
                     .font(.system(size: 12))
