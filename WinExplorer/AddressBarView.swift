@@ -107,6 +107,14 @@ struct AddressBarView: View {
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
             vm.navigate(to: url)
+        } else {
+            // Restore the previous path and tell the user what went wrong
+            editText = vm.currentURL.path
+            let alert = NSAlert()
+            alert.messageText = "Folder Not Found"
+            alert.informativeText = "\"\(path)\" does not exist or is not a folder."
+            alert.alertStyle = .warning
+            alert.runModal()
         }
     }
 }

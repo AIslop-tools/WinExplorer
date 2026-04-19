@@ -75,6 +75,7 @@ class FileManagerViewModel: ObservableObject {
     private let fm = FileManager.default
     private var volumeObservers: [Any] = []
     private var metadataQuery: NSMetadataQuery?
+    private var metadataQueryObserver: NSObjectProtocol?
 
     init() {
         self.currentURL = fm.homeDirectoryForCurrentUser
@@ -94,6 +95,7 @@ class FileManagerViewModel: ObservableObject {
 
     deinit {
         metadataQuery?.stop()
+        if let obs = metadataQueryObserver { NotificationCenter.default.removeObserver(obs) }
         let nc = NSWorkspace.shared.notificationCenter
         for obs in volumeObservers { nc.removeObserver(obs) }
     }
@@ -113,12 +115,16 @@ class FileManagerViewModel: ObservableObject {
         q.sortDescriptors = [NSSortDescriptor(key: NSMetadataItemLastUsedDateKey, ascending: false)]
         q.searchScopes = [NSMetadataQueryLocalComputerScope]
 
-        // Use a box so the closure can reference the observer token without a mutation-after-capture warning
-        let box = Box<NSObjectProtocol?>()
-        box.value = NotificationCenter.default.addObserver(
+        // Remove any previous observer before registering a new one
+        if let prev = metadataQueryObserver { NotificationCenter.default.removeObserver(prev) }
+        metadataQueryObserver = NotificationCenter.default.addObserver(
             forName: .NSMetadataQueryDidFinishGathering, object: q, queue: .main) { [weak self] _ in
             self?.handleQueryResults(q)
-            if let obs = box.value { NotificationCenter.default.removeObserver(obs as Any) }
+            // Self-remove — the stored property is kept for deinit safety too
+            if let obs = self?.metadataQueryObserver {
+                NotificationCenter.default.removeObserver(obs)
+                self?.metadataQueryObserver = nil
+            }
         }
         metadataQuery = q
         q.start()
@@ -214,8 +220,7 @@ class FileManagerViewModel: ObservableObject {
     /// or copies (cross-folder / external app) each file into `destinationURL`.
     @discardableResult
     func performDrop(providers: [NSItemProvider], into destinationURL: URL) -> Bool {
-        guard destinationURL != currentURL ||
-              providers.count > 0 else { return false }
+        guard !providers.isEmpty else { return false }
 
         // Prefer the in-app draggedURLs list for multi-selection moves;
         // fall back to provider URLs for drops from external apps.
@@ -258,25 +263,27 @@ class FileManagerViewModel: ObservableObject {
 
     private func applyDrop(urls: [URL], into destinationURL: URL) {
         var failures: [String] = []
+        var successCount = 0
         for url in urls {
             let sourceDir = url.deletingLastPathComponent()
-            if sourceDir.path == destinationURL.path { continue }  // already there
+            if sourceDir.path == destinationURL.path { continue }  // already there, skip
             let dest = uniqueDestinationURL(for: url, in: destinationURL)
             do {
-                // Move if source is within this session's drag (same volume); copy otherwise
                 if sourceDir.volumeMountPoint == destinationURL.volumeMountPoint {
                     try fm.moveItem(at: url, to: dest)
                 } else {
                     try fm.copyItem(at: url, to: dest)
                 }
+                successCount += 1
             } catch {
-                failures.append(url.lastPathComponent)
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
-        loadItems()
+        // Only reload if at least one operation succeeded — avoids clearing a Recents view
+        if successCount > 0 { loadItems() }
         if !failures.isEmpty {
             let alert = NSAlert()
-            alert.messageText = "Could Not Move Some Items"
+            alert.messageText = successCount > 0 ? "Could Not Move Some Items" : "Could Not Move Items"
             alert.informativeText = failures.joined(separator: "\n")
             alert.alertStyle = .warning
             alert.runModal()
@@ -358,10 +365,17 @@ class FileManagerViewModel: ObservableObject {
 
     private func rebuildBreadcrumbs() {
         var result: [BreadcrumbItem] = []
-        var url = currentURL
+        var url = currentURL.resolvingSymlinksInPath()  // resolve symlinks once upfront
+        var seenPaths = Set<String>()
         var depth = 0
         while depth < 50 {
             depth += 1
+            let resolved = url.standardizedFileURL.path
+            // Detect symlink cycles
+            guard seenPaths.insert(resolved).inserted else {
+                dbg("Breadcrumb cycle detected at: \(resolved)")
+                break
+            }
             result.append(BreadcrumbItem(name: breadcrumbName(for: url), url: url))
             if url.path == "/" { break }
             let parent = url.deletingLastPathComponent()
@@ -678,36 +692,37 @@ class FileManagerViewModel: ObservableObject {
         indicator.startAnimation(nil)
         progress.accessoryView = indicator
 
-        // Run the hash in the background while the sheet is shown
-        var cancelled = false
+        // Use an atomic wrapper to safely signal cancellation across threads
+        let cancelFlag = AtomicBool()
         let progressWindow: NSWindow = progress.window
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let result = self.sha256(fileURL: item.url, cancelled: { cancelled })
+            let result = self.sha256(fileURL: item.url, cancelled: { cancelFlag.value })
 
             DispatchQueue.main.async {
-                // Dismiss the progress sheet
                 progressWindow.close()
                 NSApp.stopModal()
-                guard !cancelled else { return }
+                guard !cancelFlag.value else { return }
 
                 switch result {
                 case .success(let hash):
                     self.showHashResult(hash: hash, item: item)
                 case .failure(let error):
-                    let err = NSAlert()
-                    err.messageText = "Could Not Compute Hash"
-                    err.informativeText = error.localizedDescription
-                    err.alertStyle = .warning
-                    err.runModal()
+                    if !(error is CancellationError) {
+                        let err = NSAlert()
+                        err.messageText = "Could Not Compute Hash"
+                        err.informativeText = error.localizedDescription
+                        err.alertStyle = .warning
+                        err.runModal()
+                    }
                 }
             }
         }
 
         let response = progress.runModal()
-        if response == .alertFirstButtonReturn { cancelled = true }
+        if response == .alertFirstButtonReturn { cancelFlag.value = true }
     }
 
     /// Streams the file in 64 KB chunks and feeds them into a `SHA256` hasher.
@@ -893,27 +908,34 @@ class FileManagerViewModel: ObservableObject {
     }
 }
 
-// MARK: - Helpers
-
-/// Reference wrapper — lets a closure capture a token that is assigned after the closure is created.
-private final class Box<T> { var value: T? }
-
 // MARK: - URL helpers
 
 private extension URL {
-    /// Returns the mount-point path for this URL's volume — same volume = move, different = copy.
+    /// Walks up the directory tree to find the volume mount point.
+    /// Returns the mount path (e.g. "/Volumes/USB"), or "/" for the boot volume.
+    /// Used by drag-and-drop to decide move (same volume) vs copy (different volume).
     var volumeMountPoint: String {
-        let result = "/"
-        // Walk up the path until we reach a volume mount point
         var check = self.standardized
         while check.path != "/" {
-            var isMount: ObjCBool = false
-            if FileManager.default.fileExists(atPath: check.path, isDirectory: &isMount),
-               (try? check.resourceValues(forKeys: [.isVolumeKey]).isVolume) == true {
-                return check.path
-            }
-            check = check.deletingLastPathComponent()
+            let isVol = (try? check.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false
+            if isVol { return check.path }
+            let parent = check.deletingLastPathComponent()
+            if parent.path == check.path { break }   // guard against infinite loop
+            check = parent
         }
-        return result
+        return "/"
+    }
+}
+
+// MARK: - AtomicBool
+
+/// Thread-safe boolean flag — used for SHA-256 cancellation signalling.
+private final class AtomicBool {
+    private let lock = NSLock()
+    private var _value = false
+
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }

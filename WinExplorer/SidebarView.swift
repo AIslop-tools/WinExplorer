@@ -68,7 +68,8 @@ struct SidebarRow: View {
                 .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 1.5)
         )
         .foregroundColor(isActive ? .accentColor : .primary)
-        .onDrop(of: [UTType.fileURL], isTargeted: acceptsDrop ? $isDropTargeted : .constant(false)) { providers in
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+            defer { isDropTargeted = false }   // always clear highlight, even on rejection
             guard acceptsDrop else { return false }
             return vm.performDrop(providers: providers, into: item.url)
         }
