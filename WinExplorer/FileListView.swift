@@ -1,7 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FileListView: View {
     @EnvironmentObject var vm: FileManagerViewModel
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,6 +67,16 @@ struct FileListView: View {
             }
         }
         .background(Color(NSColor.textBackgroundColor))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.accentColor, lineWidth: 2)
+                .padding(2)
+                .opacity(isDropTargeted ? 1 : 0)
+        )
+        // Drop onto empty space → copy/move into current folder
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+            vm.performDrop(providers: providers, into: vm.currentURL)
+        }
     }
 
     func rowBg(_ item: FileItem) -> Color {
@@ -77,7 +89,7 @@ struct FileListRow: View {
     let item: FileItem
 
     @State private var renameText: String = ""
-    @State private var renameFocused: Bool = false
+    @State private var isDropTargeted: Bool = false
 
     var isRenaming: Bool { vm.renamingItemID == item.id }
 
@@ -94,7 +106,6 @@ struct FileListRow: View {
                     TextField("", text: $renameText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
-                        
                         .onSubmit { vm.commitRename(item: item, newName: renameText) }
                         .onExitCommand { vm.cancelRename() }
                 } else {
@@ -130,13 +141,31 @@ struct FileListRow: View {
         }
         .frame(height: 22)
         .contentShape(Rectangle())
+        .background(
+            isDropTargeted
+                ? RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.15))
+                : nil
+        )
+        .overlay(
+            isDropTargeted
+                ? RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 1.5)
+                : nil
+        )
         .onTapGesture(count: 2) { vm.openItem(item) }
         .simultaneousGesture(TapGesture().onEnded { vm.selectedItemIDs = [item.id] })
         .contextMenu { contextMenu }
+        // ── Drag ──────────────────────────────────────────────────────────
+        .onDrag {
+            vm.beginDrag(for: item)
+            return NSItemProvider(contentsOf: item.url) ?? NSItemProvider()
+        }
+        // ── Drop (folders only) ───────────────────────────────────────────
+        .onDrop(of: [UTType.fileURL], isTargeted: item.isDirectory ? $isDropTargeted : .constant(false)) { providers in
+            guard item.isDirectory else { return false }
+            return vm.performDrop(providers: providers, into: item.url)
+        }
         .onChange(of: isRenaming) { renaming in
-            if renaming {
-                renameText = item.name
-            }
+            if renaming { renameText = item.name }
         }
     }
 

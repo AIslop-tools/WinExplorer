@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ViewMode: String, CaseIterable, Identifiable {
     case largeIcons = "Large Icons"
@@ -175,6 +176,93 @@ class FileManagerViewModel: ObservableObject {
             let alert = NSAlert()
             alert.messageText = "Could Not Eject"
             alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    // MARK: - Drag & Drop
+
+    /// URLs being dragged — set when a drag begins so multi-selection moves work correctly.
+    var draggedURLs: [URL] = []
+
+    /// Called when a drag starts on `item`. If the item is part of the current
+    /// selection, all selected URLs are captured so a drop can move them all.
+    func beginDrag(for item: FileItem) {
+        if selectedItemIDs.contains(item.id) {
+            draggedURLs = selectedItems.map { $0.url }
+        } else {
+            selectedItemIDs = [item.id]
+            draggedURLs = [item.url]
+        }
+    }
+
+    /// Resolves file URLs from `providers`, then moves (same folder → destination)
+    /// or copies (cross-folder / external app) each file into `destinationURL`.
+    @discardableResult
+    func performDrop(providers: [NSItemProvider], into destinationURL: URL) -> Bool {
+        guard destinationURL != currentURL ||
+              providers.count > 0 else { return false }
+
+        // Prefer the in-app draggedURLs list for multi-selection moves;
+        // fall back to provider URLs for drops from external apps.
+        let inAppURLs = draggedURLs.filter { fm.fileExists(atPath: $0.path) }
+        draggedURLs = []
+
+        if !inAppURLs.isEmpty {
+            applyDrop(urls: inAppURLs, into: destinationURL)
+            return true
+        }
+
+        // External drop — load URLs asynchronously from providers
+        let group = DispatchGroup()
+        var externalURLs: [URL] = []
+        let lock = NSLock()
+
+        for provider in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { data, _ in
+                defer { group.leave() }
+                var resolved: URL?
+                if let d = data as? Data {
+                    resolved = URL(dataRepresentation: d, relativeTo: nil)
+                } else if let u = data as? URL {
+                    resolved = u
+                }
+                if let u = resolved, u.isFileURL {
+                    lock.lock(); externalURLs.append(u); lock.unlock()
+                }
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            self?.applyDrop(urls: externalURLs, into: destinationURL)
+        }
+        return true
+    }
+
+    private func applyDrop(urls: [URL], into destinationURL: URL) {
+        var failures: [String] = []
+        for url in urls {
+            let sourceDir = url.deletingLastPathComponent()
+            if sourceDir.path == destinationURL.path { continue }  // already there
+            let dest = uniqueDestinationURL(for: url, in: destinationURL)
+            do {
+                // Move if source is within this session's drag (same volume); copy otherwise
+                if sourceDir.volumeMountPoint == destinationURL.volumeMountPoint {
+                    try fm.moveItem(at: url, to: dest)
+                } else {
+                    try fm.copyItem(at: url, to: dest)
+                }
+            } catch {
+                failures.append(url.lastPathComponent)
+            }
+        }
+        loadItems()
+        if !failures.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Could Not Move Some Items"
+            alert.informativeText = failures.joined(separator: "\n")
             alert.alertStyle = .warning
             alert.runModal()
         }
@@ -642,5 +730,25 @@ class FileManagerViewModel: ObservableObject {
         }
 
         sidebarSections = sections
+    }
+}
+
+// MARK: - URL helpers
+
+private extension URL {
+    /// Returns the mount-point path for this URL's volume — same volume = move, different = copy.
+    var volumeMountPoint: String {
+        var result = "/"
+        // Walk up the path until we reach a volume mount point
+        var check = self.standardized
+        while check.path != "/" {
+            var isMount: ObjCBool = false
+            if FileManager.default.fileExists(atPath: check.path, isDirectory: &isMount),
+               (try? check.resourceValues(forKeys: [.isVolumeKey]).isVolume) == true {
+                return check.path
+            }
+            check = check.deletingLastPathComponent()
+        }
+        return result
     }
 }

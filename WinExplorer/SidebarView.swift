@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @EnvironmentObject var vm: FileManagerViewModel
@@ -22,9 +23,13 @@ struct SidebarRow: View {
     @EnvironmentObject var vm: FileManagerViewModel
     let item: SidebarItem
 
+    @State private var isDropTargeted = false
+
     var isActive: Bool {
         item.isRecents ? vm.isShowingRecents : (!vm.isShowingRecents && vm.currentURL == item.url)
     }
+    /// Sidebar items that are real folders accept drops (not Recents, not eject-only volumes)
+    var acceptsDrop: Bool { !item.isRecents }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -54,8 +59,18 @@ struct SidebarRow: View {
         .padding(.horizontal, 4)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+                .fill(isDropTargeted    ? Color.accentColor.opacity(0.25)
+                      : isActive        ? Color.accentColor.opacity(0.18)
+                      : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 1.5)
         )
         .foregroundColor(isActive ? .accentColor : .primary)
+        .onDrop(of: [UTType.fileURL], isTargeted: acceptsDrop ? $isDropTargeted : .constant(false)) { providers in
+            guard acceptsDrop else { return false }
+            return vm.performDrop(providers: providers, into: item.url)
+        }
     }
 }
