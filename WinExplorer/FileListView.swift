@@ -180,6 +180,13 @@ struct FileListRow: View {
         Button("Move to Trash") { vm.selectedItemIDs = [item.id]; vm.deleteSelected() }
         Divider()
         Button("Show in Finder") { vm.showInFinder(item) }
+        if !item.isDirectory {
+            Divider()
+            Button("Calculate SHA-256") {
+                vm.selectedItemIDs = [item.id]
+                vm.calculateSHA256(for: item)
+            }
+        }
         if vm.isEjectableVolume(item) {
             Divider()
             Button("Eject") {

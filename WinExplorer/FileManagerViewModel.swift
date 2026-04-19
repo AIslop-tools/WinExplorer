@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
+import CryptoKit
 
 enum ViewMode: String, CaseIterable, Identifiable {
     case largeIcons = "Large Icons"
@@ -656,6 +657,103 @@ class FileManagerViewModel: ObservableObject {
 
     func getInfo(_ item: FileItem) {
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    // MARK: - SHA-256
+
+    /// Computes the SHA-256 hash of `item` on a background thread, then presents
+    /// a results dialog with a one-click Copy button. Shows a progress sheet while working.
+    func calculateSHA256(for item: FileItem) {
+        guard !item.isDirectory else { return }
+
+        // ── Progress sheet ────────────────────────────────────────────────
+        let progress = NSAlert()
+        progress.messageText = "Calculating SHA-256…"
+        progress.informativeText = item.name
+        progress.addButton(withTitle: "Cancel")
+
+        let indicator = NSProgressIndicator(frame: NSRect(x: 0, y: 0, width: 300, height: 20))
+        indicator.style = .bar
+        indicator.isIndeterminate = true
+        indicator.startAnimation(nil)
+        progress.accessoryView = indicator
+
+        // Run the hash in the background while the sheet is shown
+        var cancelled = false
+        let progressWindow: NSWindow = progress.window
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let result = self.sha256(fileURL: item.url, cancelled: { cancelled })
+
+            DispatchQueue.main.async {
+                // Dismiss the progress sheet
+                progressWindow.close()
+                NSApp.stopModal()
+                guard !cancelled else { return }
+
+                switch result {
+                case .success(let hash):
+                    self.showHashResult(hash: hash, item: item)
+                case .failure(let error):
+                    let err = NSAlert()
+                    err.messageText = "Could Not Compute Hash"
+                    err.informativeText = error.localizedDescription
+                    err.alertStyle = .warning
+                    err.runModal()
+                }
+            }
+        }
+
+        let response = progress.runModal()
+        if response == .alertFirstButtonReturn { cancelled = true }
+    }
+
+    /// Streams the file in 64 KB chunks and feeds them into a `SHA256` hasher.
+    /// Returns the lowercase hex digest, or an error.
+    private func sha256(fileURL: URL, cancelled: () -> Bool) -> Result<String, Error> {
+        guard let fh = FileHandle(forReadingAtPath: fileURL.path) else {
+            return .failure(CocoaError(.fileReadNoPermission,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot open file for reading."]))
+        }
+        defer { fh.closeFile() }
+
+        var hasher = SHA256()
+        let chunkSize = 65_536   // 64 KB — keeps memory flat even for very large files
+        while true {
+            if cancelled() { return .failure(CancellationError()) }
+            let chunk = fh.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize()
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return .success(hex)
+    }
+
+    private func showHashResult(hash: String, item: FileItem) {
+        let alert = NSAlert()
+        alert.messageText = "SHA-256 Hash"
+        alert.informativeText = item.name
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+
+        // Hash displayed in a monospaced, selectable text field
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 22))
+        field.stringValue = hash
+        field.isEditable = false
+        field.isSelectable = true
+        field.isBordered = true
+        field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.cell?.truncatesLastVisibleLine = false
+        alert.accessoryView = field
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(hash, forType: .string)
+        }
     }
 
     func openTerminal() {
