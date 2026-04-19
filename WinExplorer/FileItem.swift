@@ -32,7 +32,14 @@ class FileItem: Identifiable, Hashable {
             let ext = url.pathExtension.uppercased()
             self.fileType = ext.isEmpty ? "File" : "\(ext) File"
         }
-        self.icon = NSWorkspace.shared.icon(forFile: url.path)
+        // Use a shared icon cache to avoid redundant NSWorkspace lookups on every refresh
+        if let cached = FileItem.iconCache.object(forKey: url as NSURL) {
+            self.icon = cached
+        } else {
+            let img = NSWorkspace.shared.icon(forFile: url.path)
+            FileItem.iconCache.setObject(img, forKey: url as NSURL)
+            self.icon = img
+        }
     }
 
     var sizeString: String {
@@ -44,6 +51,13 @@ class FileItem: Identifiable, Hashable {
         guard let date = modificationDate else { return "" }
         return FileItem.dateFormatter.string(from: date)
     }
+
+    /// Shared icon cache — keyed by NSURL, auto-evicted under memory pressure.
+    private static let iconCache: NSCache<NSURL, NSImage> = {
+        let c = NSCache<NSURL, NSImage>()
+        c.countLimit = 2000
+        return c
+    }()
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()

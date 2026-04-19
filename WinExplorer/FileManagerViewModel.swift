@@ -112,9 +112,12 @@ class FileManagerViewModel: ObservableObject {
         q.sortDescriptors = [NSSortDescriptor(key: NSMetadataItemLastUsedDateKey, ascending: false)]
         q.searchScopes = [NSMetadataQueryLocalComputerScope]
 
-        NotificationCenter.default.addObserver(forName: .NSMetadataQueryDidFinishGathering,
-                                               object: q, queue: .main) { [weak self] _ in
+        // Use a box so the closure can reference the observer token without a mutation-after-capture warning
+        let box = Box<NSObjectProtocol?>()
+        box.value = NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidFinishGathering, object: q, queue: .main) { [weak self] _ in
             self?.handleQueryResults(q)
+            if let obs = box.value { NotificationCenter.default.removeObserver(obs as Any) }
         }
         metadataQuery = q
         q.start()
@@ -149,6 +152,15 @@ class FileManagerViewModel: ObservableObject {
         guard !s.isEmpty, let url = URL(string: s) else { return }
         let allowed = ["smb", "afp", "nfs", "ftp", "ftps"]
         guard let scheme = url.scheme?.lowercased(), allowed.contains(scheme) else { return }
+        // Reject embedded credentials (user:pass@host) — pass them via the OS dialog instead
+        guard url.user == nil, url.password == nil else {
+            let alert = NSAlert()
+            alert.messageText = "Credentials Not Allowed in URL"
+            alert.informativeText = "For security, enter the server address without a username or password. macOS will prompt for credentials when connecting."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
         NSWorkspace.shared.open(url)
     }
 
@@ -236,7 +248,9 @@ class FileManagerViewModel: ObservableObject {
         }
 
         group.notify(queue: .main) { [weak self] in
-            self?.applyDrop(urls: externalURLs, into: destinationURL)
+            // Snapshot the array after all providers have resolved (group guarantees completion)
+            let snapshot = externalURLs
+            self?.applyDrop(urls: snapshot, into: destinationURL)
         }
         return true
     }
@@ -418,7 +432,9 @@ class FileManagerViewModel: ObservableObject {
         if selCount == 0 {
             statusMessage = "\(count) item\(count == 1 ? "" : "s")"
         } else {
-            let selSize = selectedItems.filter { !$0.isDirectory }.compactMap { $0.fileSize }.reduce(0, +)
+            let selSize = selectedItems.filter { !$0.isDirectory }
+                .compactMap { $0.fileSize }
+                .reduce(Int64(0)) { (acc, val) in acc.addingReportingOverflow(val).overflow ? Int64.max : acc + val }
             if selSize > 0 {
                 let sizeStr = ByteCountFormatter.string(fromByteCount: selSize, countStyle: .file)
                 statusMessage = "\(selCount) item\(selCount == 1 ? "" : "s") selected (\(sizeStr))"
@@ -475,6 +491,14 @@ class FileManagerViewModel: ObservableObject {
     }
 
     func newFolder() {
+        guard fm.isWritableFile(atPath: currentURL.path) else {
+            let alert = NSAlert()
+            alert.messageText = "Cannot Create Folder"
+            alert.informativeText = "You don't have permission to create folders here."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
         var name = "New folder"
         var counter = 2
         var url = currentURL.appendingPathComponent(name)
@@ -502,8 +526,20 @@ class FileManagerViewModel: ObservableObject {
         renamingItemID = nil
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != item.name else { return }
-        // C-3: block path traversal — names must not contain separators or null bytes
-        guard !trimmed.contains("/"), !trimmed.contains("\0") else { return }
+        // Block path traversal: no separators, null bytes, dot-only names, or ".." components
+        guard !trimmed.contains("/"), !trimmed.contains("\0"),
+              trimmed != ".", trimmed != "..",
+              !trimmed.hasPrefix("../"), !trimmed.contains("/../") else { return }
+        // Confirm parent dir is writable before attempting rename
+        let parentPath = item.url.deletingLastPathComponent().path
+        guard fm.isWritableFile(atPath: parentPath) else {
+            let alert = NSAlert()
+            alert.messageText = "Cannot Rename"
+            alert.informativeText = "You don't have permission to rename items in this folder."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
         let newURL = item.url.deletingLastPathComponent().appendingPathComponent(trimmed)
         // M-10: warn if destination already exists
         guard !fm.fileExists(atPath: newURL.path) else {
@@ -550,16 +586,31 @@ class FileManagerViewModel: ObservableObject {
         if urlsToPaste.isEmpty {
             urlsToPaste = (NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
         }
-        // H-1: only accept file URLs that exist
+        // H-1: only accept file URLs that actually exist on disk
         urlsToPaste = urlsToPaste.filter { $0.isFileURL && fm.fileExists(atPath: $0.path) }
         guard !urlsToPaste.isEmpty else { return }
 
+        // Confirm the current directory is writable before doing anything
+        guard fm.isWritableFile(atPath: currentURL.path) else {
+            let alert = NSAlert()
+            alert.messageText = "Cannot Paste Here"
+            alert.informativeText = "You don't have permission to add items to this folder."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+
+        var failures: [String] = []
         for url in urlsToPaste {
             let dest = uniqueDestinationURL(for: url, in: currentURL)
-            if clipboardIsCut {
-                try? fm.moveItem(at: url, to: dest)
-            } else {
-                try? fm.copyItem(at: url, to: dest)
+            do {
+                if clipboardIsCut {
+                    try fm.moveItem(at: url, to: dest)
+                } else {
+                    try fm.copyItem(at: url, to: dest)
+                }
+            } catch {
+                failures.append(url.lastPathComponent)
             }
         }
         if clipboardIsCut {
@@ -567,6 +618,13 @@ class FileManagerViewModel: ObservableObject {
             clipboardIsCut = false
         }
         loadItems()
+        if !failures.isEmpty {
+            let err = NSAlert()
+            err.messageText = "Could Not Paste Some Items"
+            err.informativeText = failures.joined(separator: "\n")
+            err.alertStyle = .warning
+            err.runModal()
+        }
     }
 
     var canPaste: Bool {
@@ -601,9 +659,11 @@ class FileManagerViewModel: ObservableObject {
     }
 
     func openTerminal() {
+        // Use "--" to ensure the path is never interpreted as a flag,
+        // even if it somehow starts with a hyphen.
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-a", "Terminal", currentURL.path]
+        task.arguments = ["-a", "Terminal", "--", currentURL.path]
         try? task.run()
     }
 
@@ -612,14 +672,18 @@ class FileManagerViewModel: ObservableObject {
     private func breadcrumbName(for url: URL) -> String {
         if url.path == "/" { return "Macintosh HD" }
         if url.path == fm.homeDirectoryForCurrentUser.path { return "Home" }
-        if url.lastPathComponent == ".Trash" { return "Trash" }
+        if url.path == trashURL.path { return "Trash" }
         if url.path == "/Applications" { return "Applications" }
         return url.lastPathComponent
     }
 
-    var isInTrash: Bool {
-        currentURL.path == fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash").path
+    /// Canonical trash URL for the current user, resolved via FileManager API.
+    var trashURL: URL {
+        fm.urls(for: .trashDirectory, in: .userDomainMask).first
+            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
     }
+
+    var isInTrash: Bool { currentURL.path == trashURL.path }
 
     func emptyTrash() {
         let alert = NSAlert()
@@ -630,7 +694,6 @@ class FileManagerViewModel: ObservableObject {
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         let contents = (try? fm.contentsOfDirectory(at: trashURL,
             includingPropertiesForKeys: nil, options: [])) ?? []
         var failures: [String] = []
@@ -674,7 +737,6 @@ class FileManagerViewModel: ObservableObject {
         quickSection.insert(recentsItem, at: 0)
         sections.append(SidebarSection(title: "Quick access", items: quickSection))
 
-        let trashURL = fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         sections.append(SidebarSection(title: "This Mac", items: [
             SidebarItem(name: "Home",         url: fm.homeDirectoryForCurrentUser,      systemImage: "house"),
             SidebarItem(name: "Macintosh HD", url: URL(fileURLWithPath: "/"),           systemImage: "internaldrive"),
@@ -733,12 +795,17 @@ class FileManagerViewModel: ObservableObject {
     }
 }
 
+// MARK: - Helpers
+
+/// Reference wrapper — lets a closure capture a token that is assigned after the closure is created.
+private final class Box<T> { var value: T? }
+
 // MARK: - URL helpers
 
 private extension URL {
     /// Returns the mount-point path for this URL's volume — same volume = move, different = copy.
     var volumeMountPoint: String {
-        var result = "/"
+        let result = "/"
         // Walk up the path until we reach a volume mount point
         var check = self.standardized
         while check.path != "/" {

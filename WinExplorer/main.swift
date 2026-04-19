@@ -8,6 +8,16 @@ func dbg(_ msg: String) {
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let logURL = dir.appendingPathComponent("debug.log")
     let line = (msg + "\n").data(using: .utf8) ?? Data()
+    // Cap log at 1 MB — rotate by truncating to last 512 KB when limit is exceeded
+    let maxSize: UInt64 = 1_048_576
+    if let attrs = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+       let size = attrs[.size] as? UInt64, size > maxSize,
+       let fh = try? FileHandle(forReadingFrom: logURL) {
+        fh.seek(toFileOffset: size - 524_288)
+        let tail = fh.readDataToEndOfFile()
+        fh.closeFile()
+        try? tail.write(to: logURL)
+    }
     if let fh = try? FileHandle(forWritingTo: logURL) {
         fh.seekToEndOfFile(); fh.write(line); fh.closeFile()
     } else {
