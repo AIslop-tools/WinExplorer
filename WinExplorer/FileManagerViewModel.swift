@@ -105,12 +105,9 @@ class FileManagerViewModel: ObservableObject {
 
         metadataQuery?.stop()
         let q = NSMetadataQuery()
-        // Files opened in the last 30 days, excluding system/hidden paths
-        q.predicate = NSPredicate(format: "%K >= %@ && %K != '' && %K == false",
-            NSMetadataItemLastUsedDateKey,
-            Calendar.current.date(byAdding: .day, value: -30, to: Date())! as NSDate,
-            NSMetadataItemPathKey,
-            NSMetadataItemIsUbiquitousKey)
+        // Files opened in the last 30 days
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date())! as NSDate
+        q.predicate = NSPredicate(format: "%K > %@", NSMetadataItemLastUsedDateKey, cutoff)
         q.sortDescriptors = [NSSortDescriptor(key: NSMetadataItemLastUsedDateKey, ascending: false)]
         q.searchScopes = [NSMetadataQueryLocalComputerScope]
 
