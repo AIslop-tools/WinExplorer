@@ -23,7 +23,6 @@ struct SidebarRow: View {
     let item: SidebarItem
 
     var isActive: Bool { vm.currentURL == item.url }
-    var isNetwork: Bool { item.isNetworkVolume }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -37,7 +36,7 @@ struct SidebarRow: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if isNetwork {
+            if item.isEjectable {
                 Button {
                     vm.disconnectVolume(item.url)
                 } label: {
@@ -46,7 +45,7 @@ struct SidebarRow: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Disconnect")
+                .help(item.isNetworkVolume ? "Disconnect" : "Eject")
             }
         }
         .padding(.vertical, 2)

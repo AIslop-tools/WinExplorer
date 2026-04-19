@@ -31,6 +31,7 @@ struct SidebarItem: Identifiable {
     let url: URL
     let systemImage: String
     var isNetworkVolume: Bool = false
+    var isEjectable: Bool = false   // true for network volumes, removable drives, and disk images
 }
 
 struct ViewModelKey: FocusedValueKey {
@@ -122,11 +123,24 @@ class FileManagerViewModel: ObservableObject {
             try NSWorkspace.shared.unmountAndEjectDevice(at: url)
         } catch {
             let alert = NSAlert()
-            alert.messageText = "Could Not Disconnect"
+            alert.messageText = "Could Not Eject"
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .warning
             alert.runModal()
         }
+    }
+
+    /// Returns true when a FileItem represents a mounted volume that can be ejected
+    /// (disk images, USB drives, optical discs, or network mounts).
+    func isEjectableVolume(_ item: FileItem) -> Bool {
+        guard item.isDirectory,
+              item.url.deletingLastPathComponent().path == "/Volumes" else { return false }
+        let keys: Set<URLResourceKey> = [.volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey]
+        guard let res = try? item.url.resourceValues(forKeys: keys) else { return false }
+        let isLocal     = res.volumeIsLocal    ?? true
+        let isRemovable = res.volumeIsRemovable ?? false
+        let isOptical   = res.volumeIsEjectable ?? false
+        return !isLocal || isRemovable || isOptical
     }
 
     // MARK: - Navigation
@@ -485,19 +499,42 @@ class FileManagerViewModel: ObservableObject {
 
         let volumes = (try? fm.contentsOfDirectory(
             at: URL(fileURLWithPath: "/Volumes"),
-            includingPropertiesForKeys: [.volumeIsLocalKey, .volumeIsRemovableKey],
+            includingPropertiesForKeys: [.volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey],
             options: .skipsHiddenFiles
         )) ?? []
 
         var localVols: [SidebarItem] = []
         var networkVols: [SidebarItem] = []
         for url in volumes {
-            let res = try? url.resourceValues(forKeys: [.volumeIsLocalKey])
-            let isLocal = res?.volumeIsLocal ?? true
+            let res = try? url.resourceValues(forKeys: [.volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsEjectableKey])
+            let isLocal     = res?.volumeIsLocal    ?? true
+            let isRemovable = res?.volumeIsRemovable ?? false
+            let isOptical   = res?.volumeIsEjectable ?? false   // true only for optical discs
             if isLocal {
-                localVols.append(SidebarItem(name: url.lastPathComponent, url: url, systemImage: "externaldrive"))
+                // Skip the startup-disk symlink (/Volumes/Macintosh HD → /)
+                if url.resolvingSymlinksInPath().path == "/" { continue }
+                let icon: String
+                if isOptical {
+                    icon = "opticaldisc"
+                } else if isRemovable {
+                    icon = "externaldrive"
+                } else {
+                    icon = "internaldrive"
+                }
+                localVols.append(SidebarItem(
+                    name: url.lastPathComponent,
+                    url: url,
+                    systemImage: icon,
+                    isEjectable: isRemovable || isOptical
+                ))
             } else {
-                networkVols.append(SidebarItem(name: url.lastPathComponent, url: url, systemImage: "network", isNetworkVolume: true))
+                networkVols.append(SidebarItem(
+                    name: url.lastPathComponent,
+                    url: url,
+                    systemImage: "network",
+                    isNetworkVolume: true,
+                    isEjectable: true
+                ))
             }
         }
 

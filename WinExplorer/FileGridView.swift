@@ -87,5 +87,12 @@ struct FileGridCell: View {
         Button("Move to Trash") { vm.selectedItemIDs = [item.id]; vm.deleteSelected() }
         Divider()
         Button("Show in Finder") { vm.showInFinder(item) }
+        if vm.isEjectableVolume(item) {
+            Divider()
+            Button("Eject") {
+                vm.selectedItemIDs = [item.id]
+                vm.disconnectVolume(item.url)
+            }
+        }
     }
 }
